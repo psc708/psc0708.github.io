@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DigDig.io 1:1复刻</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Arial', sans-serif;
+            user-select: none;
+        }
+        body {
+            background: #000;
+            overflow: hidden;
+        }
+        #gameCanvas {
+            display: block;
+            background: #1a1a1a;
+        }
+        /* UI 完全复刻原版布局 */
+        #ui {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: #fff;
+            font-size: 14px;
+            z-index: 10;
+            text-shadow: 1px 1px 2px #000;
+        }
+        #leaderboard {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            width: 200px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #444;
+            padding: 10px;
+            color: #fff;
+            z-index: 10;
+        }
+        #leaderboard h3 {
+            text-align: center;
+            margin-bottom: 10px;
+            color: #4fc3f7;
+        }
+        .leader-item {
+            padding: 5px 0;
+            border-bottom: 1px solid #333;
+            display: flex;
+            justify-content: space-between;
+        }
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            font-size: 12px;
+            text-align: center;
+            z-index: 10;
+            background: rgba(0,0,0,0.5);
+            padding: 5px 15px;
+            border-radius: 5px;
+        }
+        .health-bar {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            width: 200px;
+            height: 15px;
+            background: #999;
+            border: 1px solid #666;
+            z-index: 10;
+        }
+        .health-fill {
+            height: 100%;
+            background: #4caf50;
+            transition: width 0.2s ease;
+        }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div>Score: <span id="score">0</span></div>
+        <div>Size: <span id="size">15</span></div>
+        <div>Speed: <span id="speed">4.0</span></div>
+    </div>
+    <div class="health-bar">
+        <div class="health-fill" id="healthFill" style="width: 100%;"></div>
+    </div>
+    <div id="leaderboard">
+        <h3>LEADERBOARD</h3>
+        <div id="leaderList"></div>
+    </div>
+    <div id="controls">
+        Mouse = Move | Shift = Boost | Space = Shield | R = Respawn
+    </div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        // 核心常量（和原版一致）
+        const TILE_SIZE = 20;
+        const MAP_WIDTH = 400;
+        const MAP_HEIGHT = 300;
+        const MINERALS = {
+            dirt: { color: '#8d6e63', score: 1, hardness: 1, size: 1 },
+            stone: { color: '#9e9e9e', score: 5, hardness: 2, size: 1.2 },
+            iron: { color: '#f44336', score: 10, hardness: 3, size: 1.5 },
+            gold: { color: '#ffeb3b', score: 20, hardness: 4, size: 1.8 },
+            diamond: { color: '#4caf50', score: 50, hardness: 5, size: 2 }
+        };
+
+        // 初始化画布
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        // 相机系统（复刻原版缩放/跟随）
+        const camera = {
+            x: 0,
+            y: 0,
+            scale: 1,
+            zoomSpeed: 0.1,
+            minScale: 0.5,
+            maxScale: 2
+        };
+
+        // 玩家数据（完全对齐原版初始值）
+        const player = {
+            x: MAP_WIDTH * TILE_SIZE / 2,
+            y: MAP_HEIGHT * TILE_SIZE / 2,
+            size: 15,
+            baseSpeed: 4,
+            speed: 4,
+            boostSpeed: 8,
+            boostEnergy: 100,
+            maxBoostEnergy: 100,
+            hp: 100,
+            maxHp: 100,
+            score: 0,
+            color: '#4fc3f7',
+            name: 'Player',
+            angle: 0,
+            shield: false,
+            shieldDuration: 3000,
+            shieldCooldown: 10000,
+            lastShield: 0,
+            isDead: false,
+            respawnTimer: 0
+        };
+
+        // 地形生成（原版方块化地形）
+        let terrain = [];
+        function generateTerrain() {
+            terrain = [];
+            for (let x = 0; x < MAP_WIDTH; x++) {
+                terrain[x] = [];
+                for (let y = 0; y < MAP_HEIGHT; y++) {
+                    // 边缘生成石头墙（原版边界）
+                    if (x < 5 || x > MAP_WIDTH - 6 || y < 5 || y > MAP_HEIGHT - 6) {
+                        terrain[x][y] = { type: 'stone', hp: 100 };
+                    } else {
+                        // 随机生成矿物（复刻原版分布概率）
+                        const rand = Math.random();
+                        if (rand < 0.7) terrain[x][y] = { type: 'dirt', hp: 10 };
+                        else if (rand < 0.85) terrain[x][y] = { type: 'stone', hp: 50 };
+                        else if (rand < 0.95) terrain[x][y] = { type: 'iron', hp: 80 };
+                        else if (rand < 0.99) terrain[x][y] = { type: 'gold', hp: 100 };
+                        else terrain[x][y] = { type: 'diamond', hp: 150 };
+                    }
+                }
+            }
+        }
+
+        // AI 敌人（复刻原版行为）
+        let enemies = [];
+        function spawnEnemies(count = 20) {
+            enemies = [];
+            for (let i = 0; i < count; i++) {
+                const color = `hsl(${Math.random() * 360}, 70%, 60%)`;
+                enemies.push({
+                    x: Math.random() * (MAP_WIDTH - 20) * TILE_SIZE + 10 * TILE_SIZE,
+                    y: Math.random() * (MAP_HEIGHT - 20) * TILE_SIZE + 10 * TILE_SIZE,
+                    size: 10 + Math.random() * 15,
+                    speed: 3 + Math.random() * 2,
+                    hp: 80 + Math.random() * 40,
+                    maxHp: 80 + Math.random() * 40,
+                    score: 0,
+                    color: color,
+                    name: `Bot${i + 1}`,
+                    targetX: Math.random() * MAP_WIDTH * TILE_SIZE,
+                    targetY: Math.random() * MAP_HEIGHT * TILE_SIZE,
+                    targetChangeRate: 0.01,
+                    aggression: Math.random() // 0=和平 1=攻击型
+                });
+            }
+        }
+
+        // 鼠标/键盘控制（复刻原版按键）
+        const mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+        const keys = { shift: false, space: false, r: false };
+        
+        canvas.addEventListener('mousemove', (e) => {
+            mouse.x = e.clientX;
+            mouse.y = e.clientY;
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Shift') keys.shift = true;
+            if (e.key === ' ') keys.space = true;
+            if (e.key === 'r') keys.r = true;
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.key === 'Shift') keys.shift = false;
+            if (e.key === ' ') keys.space = false;
+            if (e.key === 'r') keys.r = false;
+        });
+
+        // 玩家移动/交互逻辑（完全复刻原版）
+        function updatePlayer() {
+            if (player.isDead) {
+                player.respawnTimer += 16;
+                if (keys.r || player.respawnTimer > 5000) {
+                    // 重生（原版重生规则）
+                    player.isDead = false;
+                    player.respawnTimer = 0;
+                    player.x = MAP_WIDTH * TILE_SIZE / 2;
+                    player.y = MAP_HEIGHT * TILE_SIZE / 2;
+                    player.size = 15;
+                    player.hp = 100;
+                    player.score = Math.floor(player.score * 0.5); // 死亡掉50%分数
+                    player.boostEnergy = 100;
+                }
+                return;
+            }
+
+            // 计算鼠标方向（玩家旋转）
+            const dx = mouse.x - canvas.width / 2;
+            const dy = mouse.y - canvas.height / 2;
+            player.angle = Math.atan2(dy, dx);
+
+            // 冲刺逻辑（Shift）
+            let currentSpeed = player.baseSpeed;
+            if (keys.shift && player.boostEnergy > 0) {
+                currentSpeed = player.boostSpeed;
+                player.boostEnergy -= 0.5;
+            } else if (player.boostEnergy < player.maxBoostEnergy) {
+                player.boostEnergy += 0.1;
+            }
+            player.speed = currentSpeed;
+
+            // 护盾逻辑（Space）
+            const now = Date.now();
+            if (keys.space && now - player.lastShield > player.shieldCooldown) {
+                player.shield = true;
+                player.lastShield = now;
+                setTimeout(() => { player.shield = false; }, player.shieldDuration);
+            }
+
+            // 移动玩家
+            player.x += Math.cos(player.angle) * player.speed;
+            player.y += Math.sin(player.angle) * player.speed;
+
+            // 边界限制
+            player.x = Math.max(TILE_SIZE * 5, Math.min(MAP_WIDTH * TILE_SIZE - TILE_SIZE * 5, player.x));
+            player.y = Math.max(TILE_SIZE * 5, Math.min(MAP_HEIGHT * TILE_SIZE - TILE_SIZE * 5, player.y));
+
+            // 挖地形（核心碰撞检测）
+            const playerTileX = Math.floor(player.x / TILE_SIZE);
+            const playerTileY = Math.floor(player.y / TILE_SIZE);
+            // 检测周围8格地形
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    const tx = playerTileX + dx;
+                    const ty = playerTileY + dy;
+                    if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT && terrain[tx][ty]) {
+                        const mineral = MINERALS[terrain[tx][ty].type];
+                        const tileCenterX = tx * TILE_SIZE + TILE_SIZE / 2;
+                        const tileCenterY = ty * TILE_SIZE + TILE_SIZE / 2;
+                        const distance = Math.hypot(player.x - tileCenterX, player.y - tileCenterY);
+
+                        // 可以挖掘的条件
+                        if (distance < player.size + (mineral.size * TILE_SIZE / 2)) {
+                            terrain[tx][ty].hp -= player.size / mineral.hardness;
+                            if (terrain[tx][ty].hp <= 0) {
+                                // 挖掉矿物，获得分数和成长
+                                player.score += mineral.score;
+                                player.size += mineral.score * 0.01;
+                                player.baseSpeed = 4 + (player.size / 50); // 大小影响速度
+                                player.maxHp = 100 + (player.size * 2);
+                                player.hp = Math.min(player.hp + 1, player.maxHp); // 挖矿物少量回血
+                                // 挖掉后变为空气
+                                terrain[tx][ty] = null;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 更新UI
+            document.getElementById('score').textContent = Math.floor(player.score);
+            document.getElementById('size').textContent = player.size.toFixed(1);
+            document.getElementById('speed').textContent = player.speed.toFixed(1);
+            document.getElementById('healthFill').style.width = `${(player.hp / player.maxHp) * 100}%`;
+        }
+
+        // AI 敌人逻辑（复刻原版寻路/攻击）
+        function updateEnemies() {
+            enemies.forEach(enemy => {
+                // 随机更换目标
+                if (Math.random() < enemy.targetChangeRate) {
+                    enemy.targetX = Math.random() * MAP_WIDTH * TILE_SIZE;
+                    enemy.targetY = Math.random() * MAP_HEIGHT * TILE_SIZE;
+                }
+
+                // 攻击型AI会追击玩家
+                if (enemy.aggression > 0.7) {
+                    const distanceToPlayer = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                    if (distanceToPlayer < 500 && !player.isDead) {
+                        enemy.targetX = player.x;
+                        enemy.targetY = player.y;
+                    }
+                }
+
+                // 移动AI
+                const dx = enemy.targetX - enemy.x;
+                const dy = enemy.targetY - enemy.y;
+                const angle = Math.atan2(dy, dx);
+                enemy.x += Math.cos(angle) * enemy.speed;
+                enemy.y += Math.sin(angle) * enemy.speed;
+
+                // AI挖地形
+                const enemyTileX = Math.floor(enemy.x / TILE_SIZE);
+                const enemyTileY = Math.floor(enemy.y / TILE_SIZE);
+                for (let dx = -1; dx <= 1; dx++) {
+                    for (let dy = -1; dy <= 1; dy++) {
+                        const tx = enemyTileX + dx;
+                        const ty = enemyTileY + dy;
+                        if (tx >= 0 && tx < MAP_WIDTH && ty >= 0 && ty < MAP_HEIGHT && terrain[tx][ty]) {
+                            const mineral = MINERALS[terrain[tx][ty].type];
+                            const tileCenterX = tx * TILE_SIZE + TILE_SIZE / 2;
+                            const tileCenterY = ty * TILE_SIZE + TILE_SIZE / 2;
+                            const distance = Math.hypot(enemy.x - tileCenterX, enemy.y - tileCenterY);
+
+                            if (distance < enemy.size + (mineral.size * TILE_SIZE / 2)) {
+                                terrain[tx][ty].hp -= enemy.size / mineral.hardness;
+                                if (terrain[tx][ty].hp <= 0) {
+                                    enemy.score += mineral.score;
+                                    enemy.size += mineral.score * 0.01;
+                                    enemy.speed = 3 + (enemy.size / 50);
+                                    terrain[tx][ty] = null;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // AI和玩家碰撞
+                if (!player.isDead) {
+                    const distance = Math.hypot(player.x - enemy.x, player.y - enemy.y);
+                    if (distance < player.size + enemy.size) {
+                        if (player.shield) {
+                            // 护盾反弹
+                            enemy.x += Math.cos(angle + Math.PI) * 20;
+                            enemy.y += Math.sin(angle + Math.PI) * 20;
+                            enemy.hp -= 20;
+                        } else {
+                            if (player.size > enemy.size) {
+                                // 玩家吃掉AI
+                                player.score += enemy.score / 2;
+                                player.size += enemy.size / 10;
+                                // 重置AI
+                                enemy.x = Math.random() * (MAP_WIDTH - 20) * TILE_SIZE + 10 * TILE_SIZE;
+                                enemy.y = Math.random() * (MAP_HEIGHT - 20) * TILE_SIZE + 10 * TILE_SIZE;
+                                enemy.size = 10 + Math.random() * 15;
+                                enemy.score = 0;
+                            } else {
+                                // AI攻击玩家
+                                player.hp -= enemy.size / 10;
+                                if (player.hp <= 0) {
+                                    player.isDead = true;
+                                    player.hp = 0;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // AI死亡重置
+                if (enemy.hp <= 0) {
+                    enemy.x = Math.random() * (MAP_WIDTH - 20) * TILE_SIZE + 10 * TILE_SIZE;
+                    enemy.y = Math.random() * (MAP_HEIGHT - 20) * TILE_SIZE + 10 * TILE_SIZE;
+                    enemy.size = 10 + Math.random() * 15;
+                    enemy.hp = enemy.maxHp;
+                    enemy.score = 0;
+                }
+            });
+
+            // 更新排行榜
+            updateLeaderboard();
+        }
+
+        // 排行榜（复刻原版排序）
+        function updateLeaderboard() {
+            const allPlayers = [player, ...enemies];
+            allPlayers.sort((a, b) => b.score - a.score);
+            const leaderList = document.getElementById('leaderList');
+            leaderList.innerHTML = '';
+            
+            allPlayers.slice(0, 8).forEach((p, i) => {
+                const item = document.createElement('div');
+                item.className = 'leader-item';
+                item.innerHTML = `
+                    <span>${i + 1}. ${p.name}</span>
+                    <span>${Math.floor(p.score)}</span>
+                `;
+                // 高亮玩家
+                if (p === player) item.style.color = '#4fc3f7';
+                leaderList.appendChild(item);
+            });
+        }
+
+        // 绘制系统（像素级复刻原版视觉）
+        function draw() {
+            // 清空画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // 设置相机
+            ctx.save();
+            ctx.translate(canvas.width / 2, canvas.height / 2);
+            ctx.scale(camera.scale, camera.scale);
+            ctx.translate(-player.x, -player.y);
+
+            // 绘制地形
+            for (let x = 0; x < MAP_WIDTH; x++) {
+                for (let y = 0; y < MAP_HEIGHT; y++) {
+                    if (terrain[x][y]) {
+                        const mineral = MINERALS[terrain[x][y].type];
+                        ctx.fillStyle = mineral.color;
+                        // 绘制方块地形（原版样式）
+                        ctx.fillRect(
+                            x * TILE_SIZE,
+                            y * TILE_SIZE,
+                            TILE_SIZE,
+                            TILE_SIZE
+                        );
+                        // 绘制矿物HP条（原版血条效果）
+                        if (terrain[x][y].hp < MINERALS[terrain[x][y].type].hardness * 30) {
+                            ctx.fillStyle = '#ff0000';
+                            ctx.fillRect(
+                                x * TILE_SIZE,
+                                y * TILE_SIZE - 5,
+                                (terrain[x][y].hp / (MINERALS[terrain[x][y].type].hardness * 30)) * TILE_SIZE,
+                                3
+                            );
+                        }
+                    }
+                }
+            }
+
+            // 绘制敌人
+            enemies.forEach(enemy => {
+                // 绘制AI身体（原版圆形）
+                ctx.fillStyle = enemy.color;
+                ctx.beginPath();
+                ctx.arc(enemy.x, enemy.y, enemy.size, 0, Math.PI * 2);
+                ctx.fill();
+                // AI轮廓
+                ctx.strokeStyle = '#000';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+                // AI名字
+                ctx.fillStyle = '#fff';
+                ctx.font = '10px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(enemy.name, enemy.x, enemy.y - enemy.size - 5);
+            });
+
+            // 绘制玩家
+            if (!player.isDead) {
+                // 玩家身体
+                ctx.fillStyle = player.color;
+                ctx.beginPath();
+                ctx.arc(player.x, player.y, player.size, 0, Math.PI * 2);
+                ctx.fill();
+                // 护盾效果（原版护盾样式）
+                if (player.shield) {
+                    ctx.strokeStyle = '#4fc3f7';
+                    ctx.lineWidth = 3;
+                    ctx.beginPath();
+                    ctx.arc(player.x, player.y, player.size + 5, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                // 玩家方向指示器（原版三角形）
+                ctx.fillStyle = '#000';
+                ctx.beginPath();
+                ctx.moveTo(
+                    player.x + Math.cos(player.angle) * player.size,
+                    player.y + Math.sin(player.angle) * player.size
+                );
+                ctx.lineTo(
+                    player.x + Math.cos(player.angle + 2.5) * player.size / 2,
+                    player.y + Math.sin(player.angle + 2.5) * player.size / 2
+                );
+                ctx.lineTo(
+                    player.x + Math.cos(player.angle - 2.5) * player.size / 2,
+                    player.y + Math.sin(player.angle - 2.5) * player.size / 2
+                );
+                ctx.fill();
+                // 玩家名字
+                ctx.fillStyle = '#fff';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(player.name, player.x, player.y - player.size - 5);
+            } else {
+                // 死亡文字（原版提示）
+                ctx.fillStyle = '#ff0000';
+                ctx.font = '30px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('YOU DIED! Press R to Respawn', player.x, player.y);
+            }
+
+            ctx.restore();
+
+            // 绘制冲刺能量条（原版位置）
+            ctx.fillStyle = '#333';
+            ctx.fillRect(10, 70, 200, 10);
+            ctx.fillStyle = '#4fc3f7';
+            ctx.fillRect(10, 70, (player.boostEnergy / player.maxBoostEnergy) * 200, 10);
+            ctx.fillStyle = '#fff';
+            ctx.font = '10px Arial';
+            ctx.fillText('Boost', 10, 65);
+        }
+
+        // 游戏主循环
+        function gameLoop() {
+            updatePlayer();
+            updateEnemies();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // 初始化游戏
+        generateTerrain();
+        spawnEnemies();
+        gameLoop();
+
+        // 窗口适配
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+    </script>
+</body>
+</html>
